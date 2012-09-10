@@ -1,10 +1,11 @@
-/**
-*
-* Thermostat
-*
+/*etherShield_web_switch_02
+
+  22-07-12
+
+  Un pulsante comanda un LED su arduino pin 4
+
+
 */
-
-
 #include "EtherShield.h"
 
 
@@ -27,10 +28,17 @@
 static uint8_t mymac[6] = {0x54,0x55,0x58,0x10,0x00,0x24};
 static uint8_t myip[4] = {192,168,99,123};
 
+
 static uint8_t buf[BUFFER_SIZE+1];
 #define STR_BUFFER_SIZE 22
 static char strbuf[STR_BUFFER_SIZE+1];
 
+
+/**
+*
+* Thermostat
+*
+*/
 
 // Needed for prog_char PROGMEM
 //#include <avr/pgmspace.h>
@@ -41,7 +49,8 @@ static char strbuf[STR_BUFFER_SIZE+1];
 */
 
 // Number of rooms
-#define ROOMS 2
+#define ROOMS 5
+#define PROGRAMS_NUMBER 7
 
 // Pins
 #define ONE_WIRE_PIN 9
@@ -49,17 +58,18 @@ static char strbuf[STR_BUFFER_SIZE+1];
 
 #define ROOM_1_PIN 2
 #define ROOM_2_PIN 3
+#define ROOM_3_PIN 4
+#define ROOM_4_PIN 5
+#define ROOM_5_PIN 6
 
 // TODO: move to config
 
 #define TEMP_READ_INTERVAL 4000
-#define VALVE_OPENING_TIME 120000 // 2 minutes
-#define BLOCKED_TIME 3600000
-#define RISE_TEMP_TIME 600000
-#define RISE_TEMP_DELTA 0.5
-#define IDLE_TIME 10000
-#define HYSTERESIS 0.5
-#define LCD_USR_SCREEN_ROTATE_TIME 4000
+#define VALVE_OPENING_TIME_S 120 // 2 minutes
+#define BLOCKED_TIME_S 3600 // 1 hour
+#define RISE_TEMP_TIME_S 600
+#define RISE_TEMP_DELTA 50
+#define HYSTERESIS 50
 
 // Room status
 #define OPENING 'V' // valves are opening for VALVE_OPENING_TIME
@@ -67,7 +77,20 @@ static char strbuf[STR_BUFFER_SIZE+1];
 #define OPEN 'O' // Open (main pump is also open)
 #define BLOCKED 'B' // Blocked until BLOCKED_TIME is elapsed
 
+// Error codes
+#define ERR_NO 0
+#define ERR_WRONG_COMMAND 1
+#define ERR_WRONG_ROOM 2
+#define ERR_WRONG_PROGRAM 3
 
+// Commands
+#define CMD_ROOM_SET_PGM 1
+#define CMD_WRITE_EEPROM 2
+#define CMD_TIME_SET 3
+#define CMD_TEMPERATURE_SET 4
+#define CMD_RESET 5
+
+//#include "Timer.h"
 Timer t;
 
 
@@ -77,15 +100,32 @@ Timer t;
 *
 */
 
+//#include <Wire.h>
+//#include "RTClib.h"
 
 RTC_DS1307 RTC;
 DateTime now;
+// For settings menu:
+byte hh, mm, d, m, yOff;
+
+/*
+void RTC_set(){
+    if(hh || mm || d || m || yOff){
+        hh = 0;
+        mm = 0;
+        d = 0;
+        m = 0;
+        yOff = 0;
+        RTC.adjust(DateTime(yOff, m, d, hh, mm, 0));
+    }
+}*/
 
 /******************************
  *
  * EEPROM
  *
  */
+//#include <EEPROM.h>
 
 
 /** ************************************************
@@ -120,15 +160,16 @@ DallasTemperature sensors(&oneWire);
 // Global time (minutes from 0)
 unsigned int this_time;
 byte this_weekday;
+int last_error_code = ERR_NO;
 
 // Global OFF
 byte off = 0;
 byte pump_open = 0;
-byte info_room = 0;
+
 
 // Temperatures
 // TODO: configurable
-float T[] = {5, 15, 18, 28};
+int T[] = {500, 1500, 1800, 2800};
 
 // Programs
 // 8 slots    6:30  8:00 12:00 13:00 16:00 20:00 22:00
@@ -147,7 +188,7 @@ byte daily_program[][8] = {
 };
 
 // Weekly programs, 0 is monday
-byte weekly_program[][7] = {
+byte weekly_program[][PROGRAMS_NUMBER] = {
     //  Mo Tu Th We Fr Sa Su
         {0, 0, 0, 0, 0, 0, 0}, // always off
         {1, 1, 1, 1, 1, 1, 1}, // Always 1
@@ -164,18 +205,19 @@ byte weekly_program[][7] = {
 
 // Array of rooms
 struct room_t {
-  int name;
   DeviceAddress address;
   byte pin;
   byte program;
   char status;
-  byte last_status;
-  float temperature;
-  float old_temperature;
-  unsigned long last_status_change;
+  int temperature;
+  int old_temperature;
+  uint32_t last_status_change;
 } rooms[ROOMS] = {
-    {1, { 0x28, 0xAD, 0x4C, 0xC4, 0x03, 0x00, 0x00, 0x13}, ROOM_1_PIN, 3},
-    {2, { 0x28, 0x6C, 0x41, 0xC4, 0x03, 0x00, 0x00, 0x57}, ROOM_2_PIN, 8}
+    {{ 0x28, 0xAD, 0x4C, 0xC4, 0x03, 0x00, 0x00, 0x13}, ROOM_1_PIN, 3},
+    {{ 0x28, 0x6C, 0x41, 0xC4, 0x03, 0x00, 0x00, 0x57}, ROOM_2_PIN, 8},
+    {{ 0x28, 0x6C, 0x41, 0xC4, 0x03, 0x00, 0x00, 0x37}, ROOM_3_PIN, 8},
+    {{ 0x28, 0x6C, 0x41, 0xC4, 0x03, 0x00, 0x00, 0x27}, ROOM_4_PIN, 8},
+    {{ 0x28, 0x6C, 0x41, 0xC4, 0x03, 0x00, 0x00, 0x67}, ROOM_5_PIN, 8}
 };
 
 
@@ -208,7 +250,7 @@ void check_temperatures(){
         float tempC = sensors.getTempC(rooms[i].address);
         if (tempC != -127.00) {
             rooms[i].old_temperature = rooms[i].temperature;
-            rooms[i].temperature = tempC;
+            rooms[i].temperature = (int)(tempC * 100);
         }
         byte new_status = rooms[i].status;
         needs_heating = new_status == OPENING;
@@ -221,21 +263,22 @@ void check_temperatures(){
         } else {
             switch(rooms[i].status){
                 case OPENING:
-                    if(VALVE_OPENING_TIME < millis() - rooms[i].last_status_change){
+                    if(VALVE_OPENING_TIME_S < now.unixtime() - rooms[i].last_status_change){
                         new_status = OPEN;
                     }
                     break;
                 case OPEN:
-                    if(RISE_TEMP_TIME <  millis() - rooms[i].last_status_change){
+                    if(RISE_TEMP_TIME_S <  now.unixtime() - rooms[i].last_status_change){
                         if(rooms[i].temperature - rooms[i].old_temperature < RISE_TEMP_DELTA){
                             new_status = BLOCKED;
                         }
                     } else {
+                        rooms[i].last_status_change = now.unixtime();
                         pump_open = 1;
                     }
                     break;
                 case BLOCKED:
-                    if(BLOCKED_TIME <  millis() - rooms[i].last_status_change){
+                    if(BLOCKED_TIME_S <  now.unixtime() - rooms[i].last_status_change){
                         new_status = CLOSED;
                     }
                     break;
@@ -245,7 +288,7 @@ void check_temperatures(){
             }
         }
         if(new_status != rooms[i].status){
-            rooms[i].last_status_change = millis();
+            rooms[i].last_status_change = now.unixtime();
             rooms[i].status = new_status;
         }
         digitalWrite(rooms[i].pin, new_status == OPENING || new_status == OPEN);
@@ -281,7 +324,17 @@ void thermo_setup(){
     }
 
   t.every(TEMP_READ_INTERVAL, check_temperatures);
+  // Check if needs update
+  //RTC_set();
 
+    if(hh || mm || d || m || yOff){
+        hh = 0;
+        mm = 0;
+        d = 0;
+        m = 0;
+        yOff = 0;
+        RTC.adjust(DateTime(yOff, m, d, hh, mm, 0));
+    }
 }
 
 void thermo_loop(){
@@ -395,9 +448,9 @@ uint8_t find_key_val(char *str,char *key){
 /**
  * Get the numeric single digit parameter
  */
-int8_t analyse_cmd(char *str){
+int8_t analyse_cmd(char *str, char *key){
   int8_t r=-1;
-  if(find_key_val(str,"cmd")){
+  if(find_key_val(str, key)){
     if(*strbuf < 0x3a && *strbuf > 0x2f){
       //is a ASCII number, return it
       r=(*strbuf - 0x30);
@@ -428,6 +481,14 @@ uint16_t print_homepage(uint8_t *buf){
   return(plen);
 }
 
+void decimal_string(int num, char* _buf){
+    char buf2[3];
+    itoa(num/100, _buf, 10);
+    strcat(_buf, ".");
+    itoa(num%100, buf2, 10);
+    strcat(_buf, buf2);
+}
+
 /**
  * Print status
  */
@@ -436,49 +497,49 @@ uint16_t print_status(uint8_t *buf){
     char buf2[32];
 
     plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: text/json\r\n\r\n"));
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("{"));
+
+    plen=es.ES_fill_tcp_data_p(buf,plen, pump_open ? PSTR("{P:1,u:") : PSTR("{P:0,u:"));
+    ultoa(now.unixtime(), buf2, 10);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    itoa(memoryFree(), buf2, 10);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",E:"));
+    itoa(last_error_code, buf2, 10);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",f:"));
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR(",R:{"));
     for(int room=0; room<ROOMS; room++){
 
         itoa(room, buf2, 10);
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
         plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(":{t:"));
 
-        dtostrf(rooms[room].temperature, 5, 2, buf2);
+        decimal_string(rooms[room].temperature, buf2);
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",T:"));
-        dtostrf(get_desired_temperature(room), 5, 2, buf2);
+        decimal_string(get_desired_temperature(room), buf2);
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         itoa(rooms[room].program, buf2, 10);
         plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",p:"));
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
-        itoa(memoryFree(), buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",f:"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        itoa(now.hour(), buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",hh:"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        itoa(now.minute(), buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",mm:"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        itoa(now.second(), buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",ss:"));
+        ultoa(rooms[room].last_status_change, buf2, 10);
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",l:"));
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
 
         plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",s:"));
-        buf2[0] = rooms[room].status;
-        buf2[1] = '\0';
+        buf2[0] = '\'';
+        buf2[1] = rooms[room].status;
+        buf2[2] = '\'';
+        buf2[3] = '\0';
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         plen=es.ES_fill_tcp_data_p(buf,plen, room != ROOMS - 1 ? PSTR("},") : PSTR("}"));
     }
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("}"));
+    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("}}"));
     return(plen);
 }
 
@@ -491,7 +552,7 @@ uint16_t print_status(uint8_t *buf){
  */
 void loop(){
     uint16_t plen, dat_p;
-    int8_t cmd;
+    int cmd, parm1, parm2;
     plen = es.ES_enc28j60PacketReceive(BUFFER_SIZE, buf);
     /*plen will be unequal to zero if there is a valid packet (without crc error) */
     if(plen!=0){
@@ -534,12 +595,28 @@ void loop(){
                     plen=print_homepage(buf);
                     goto SENDTCP;
                 }
-                cmd=analyse_cmd((char *)&(buf[dat_p+5]));
-                if(cmd==2){
-                }
-                else if (cmd==3){
+                cmd=analyse_cmd((char *)&(buf[dat_p+5]), "c");
+                // Switch?
+                switch(cmd){
+                    case CMD_ROOM_SET_PGM:
+                        parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "r");
+                        if(parm1 < 0 || parm1 >= ROOMS){
+                            last_error_code = ERR_WRONG_ROOM;
+                        } else {
+                            parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                            if(parm2 < 0 || parm2 >= PROGRAMS_NUMBER){
+                                last_error_code = ERR_WRONG_PROGRAM;
+                            } else {
+                                rooms[parm1].program = parm2;
+                            }
+                        }
+                    break;
+                    default:
+                        last_error_code = ERR_WRONG_COMMAND;
+
                 }
                 plen=print_status(buf);
+                last_error_code = ERR_NO;
 SENDTCP:        es.ES_make_tcp_ack_from_any(buf); // send ack for http get
                 es.ES_make_tcp_ack_with_data(buf, plen); // send data
             }
