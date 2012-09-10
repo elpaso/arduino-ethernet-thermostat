@@ -1,0 +1,70 @@
+EtherShieldThermo.o: EtherShieldThermo.ino \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Arduino.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/binary.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/WCharacter.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/WString.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/HardwareSerial.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Stream.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Print.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Printable.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/new.h \
+ /usr/share/arduino/hardware/arduino/variants/standard/pins_arduino.h \
+ /home/ale/sketchbook/libraries/EtherShield/EtherShield.h \
+ /home/ale/sketchbook/libraries/EtherShield/enc28j60.h \
+ /home/ale/sketchbook/libraries/EtherShield/ip_arp_udp_tcp.h \
+ /home/ale/sketchbook/libraries/EtherShield/net.h \
+ /home/ale/sketchbook/libraries/Timer/Timer.h \
+ /home/ale/sketchbook/libraries/Timer/Event.h \
+ /usr/share/arduino/libraries/Wire/Wire.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Stream.h \
+ /home/ale/sketchbook/libraries/RTClib/RTClib.h \
+ /usr/share/arduino/libraries/EEPROM/EEPROM.h \
+ /home/ale/sketchbook/libraries/OneWire/OneWire.h \
+ /usr/share/arduino/hardware/arduino/cores/arduino/Arduino.h \
+ /home/ale/sketchbook/libraries/DallasTemperature/DallasTemperature.h
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Arduino.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/binary.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/WCharacter.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/WString.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/HardwareSerial.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Stream.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Print.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Printable.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/new.h:
+
+/usr/share/arduino/hardware/arduino/variants/standard/pins_arduino.h:
+
+/home/ale/sketchbook/libraries/EtherShield/EtherShield.h:
+
+/home/ale/sketchbook/libraries/EtherShield/enc28j60.h:
+
+/home/ale/sketchbook/libraries/EtherShield/ip_arp_udp_tcp.h:
+
+/home/ale/sketchbook/libraries/EtherShield/net.h:
+
+/home/ale/sketchbook/libraries/Timer/Timer.h:
+
+/home/ale/sketchbook/libraries/Timer/Event.h:
+
+/usr/share/arduino/libraries/Wire/Wire.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Stream.h:
+
+/home/ale/sketchbook/libraries/RTClib/RTClib.h:
+
+/usr/share/arduino/libraries/EEPROM/EEPROM.h:
+
+/home/ale/sketchbook/libraries/OneWire/OneWire.h:
+
+/usr/share/arduino/hardware/arduino/cores/arduino/Arduino.h:
+
+/home/ale/sketchbook/libraries/DallasTemperature/DallasTemperature.h:
