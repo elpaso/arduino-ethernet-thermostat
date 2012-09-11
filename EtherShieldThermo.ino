@@ -64,12 +64,14 @@ static char strbuf[STR_BUFFER_SIZE+1];
 
 // TODO: move to config
 
-#define TEMP_READ_INTERVAL 4000
+#define TEMP_READ_INTERVAL 4000 // millis
 #define VALVE_OPENING_TIME_S 120 // 2 minutes
 #define BLOCKED_TIME_S 3600 // 1 hour
-#define RISE_TEMP_TIME_S 600
+#define RISE_TEMP_TIME_S 600 // 10 minutes
 #define RISE_TEMP_DELTA 50
 #define HYSTERESIS 50
+#define MAX_ALLOWED_T 2500 // in cents
+
 
 // Room status
 #define OPENING 'V' // valves are opening for VALVE_OPENING_TIME
@@ -82,6 +84,7 @@ static char strbuf[STR_BUFFER_SIZE+1];
 #define ERR_WRONG_COMMAND 1
 #define ERR_WRONG_ROOM 2
 #define ERR_WRONG_PROGRAM 3
+#define ERR_WRONG_PARM 4 // Generic parameter error
 
 // Commands
 #define CMD_ROOM_SET_PGM 1
@@ -105,20 +108,7 @@ Timer t;
 
 RTC_DS1307 RTC;
 DateTime now;
-// For settings menu:
-byte hh, mm, d, m, yOff;
 
-/*
-void RTC_set(){
-    if(hh || mm || d || m || yOff){
-        hh = 0;
-        mm = 0;
-        d = 0;
-        m = 0;
-        yOff = 0;
-        RTC.adjust(DateTime(yOff, m, d, hh, mm, 0));
-    }
-}*/
 
 /******************************
  *
@@ -159,13 +149,14 @@ DallasTemperature sensors(&oneWire);
 
 // Global time (minutes from 0)
 unsigned int this_time;
+uint32_t last_blocked_time = 0;
 byte this_weekday;
 int last_error_code = ERR_NO;
 
 // Global OFF
 byte off = 0;
 byte pump_open = 0;
-
+byte blocked = 0;
 
 // Temperatures
 // TODO: configurable
@@ -244,56 +235,65 @@ void check_temperatures(){
     this_weekday = this_weekday ? this_weekday - 1 : 6;
 
     pump_open = 0;
+
     int needs_heating = false;
-    for(int i=0; i<ROOMS; i++){
-        // Get temperature
-        float tempC = sensors.getTempC(rooms[i].address);
-        if (tempC != -127.00) {
-            rooms[i].old_temperature = rooms[i].temperature;
-            rooms[i].temperature = (int)(tempC * 100);
-        }
-        byte new_status = rooms[i].status;
-        needs_heating = new_status == OPENING;
-        if(! needs_heating){
-            float t = get_desired_temperature(i);
-            needs_heating = rooms[i].temperature < (new_status == OPEN ? t + HYSTERESIS : t - HYSTERESIS);
-        }
-        if(!needs_heating){
-            new_status = CLOSED;
-        } else {
-            switch(rooms[i].status){
-                case OPENING:
-                    if(VALVE_OPENING_TIME_S < now.unixtime() - rooms[i].last_status_change){
-                        new_status = OPEN;
-                    }
-                    break;
-                case OPEN:
-                    if(RISE_TEMP_TIME_S <  now.unixtime() - rooms[i].last_status_change){
-                        if(rooms[i].temperature - rooms[i].old_temperature < RISE_TEMP_DELTA){
-                            new_status = BLOCKED;
-                        }
-                    } else {
-                        rooms[i].last_status_change = now.unixtime();
-                        pump_open = 1;
-                    }
-                    break;
-                case BLOCKED:
-                    if(BLOCKED_TIME_S <  now.unixtime() - rooms[i].last_status_change){
-                        new_status = CLOSED;
-                    }
-                    break;
-                default:
-                case CLOSED:
-                    new_status = OPENING;
-            }
-        }
-        if(new_status != rooms[i].status){
-            rooms[i].last_status_change = now.unixtime();
-            rooms[i].status = new_status;
-        }
-        digitalWrite(rooms[i].pin, new_status == OPENING || new_status == OPEN);
+    if(blocked && (now.unixtime() - last_blocked_time > BLOCKED_TIME_S )){
+        blocked = 0;
     }
-    digitalWrite(PUMP_PIN, pump_open);
+    for(int i=0; i<ROOMS; i++){
+        if(!blocked){
+            // Get temperature
+            float tempC = sensors.getTempC(rooms[i].address);
+            if (tempC != -127.00) {
+                rooms[i].temperature = (int)(tempC * 100);
+            }
+            char new_status = rooms[i].status;
+            needs_heating = (new_status == OPENING);
+            if(! needs_heating){
+                float t = get_desired_temperature(i);
+                needs_heating = rooms[i].temperature < (new_status == OPEN ? t + HYSTERESIS : t - HYSTERESIS);
+            }
+            if(!needs_heating){
+                new_status = CLOSED;
+            } else {
+                switch(rooms[i].status){
+                    case OPENING:
+                        if(VALVE_OPENING_TIME_S < now.unixtime() - rooms[i].last_status_change){
+                            new_status = OPEN;
+                            rooms[i].old_temperature = rooms[i].temperature;
+                        }
+                        break;
+                    case OPEN:
+                        if(RISE_TEMP_TIME_S <  now.unixtime() - rooms[i].last_status_change){
+                            if(rooms[i].temperature - rooms[i].old_temperature < RISE_TEMP_DELTA){
+                                new_status = BLOCKED;
+                                last_blocked_time = now.unixtime();
+                                blocked = 1;
+                            } else {
+                                rooms[i].last_status_change = now.unixtime();
+                                rooms[i].old_temperature = rooms[i].temperature;
+                                pump_open = 1;
+                            }
+                        } else {
+                            pump_open = 1;
+                        }
+                        break;
+                    case BLOCKED: // Should only trigger while not blocked
+                        new_status = CLOSED;
+                        break;
+                    default:
+                    case CLOSED:
+                        new_status = OPENING;
+                }
+            }
+            if(new_status != rooms[i].status){
+                rooms[i].last_status_change = now.unixtime();
+                rooms[i].status = new_status;
+            }
+            digitalWrite(rooms[i].pin, (new_status == OPENING) || (new_status == OPEN));
+        }
+    }
+    digitalWrite(PUMP_PIN, pump_open && !blocked);
 }
 
 
@@ -313,7 +313,7 @@ void thermo_setup(){
     }
 
 
-  pinMode(PUMP_PIN, OUTPUT);
+    pinMode(PUMP_PIN, OUTPUT);
 
     // Sensors
     // set the resolution to 12 bit (maximum)
@@ -324,17 +324,7 @@ void thermo_setup(){
     }
 
   t.every(TEMP_READ_INTERVAL, check_temperatures);
-  // Check if needs update
-  //RTC_set();
 
-    if(hh || mm || d || m || yOff){
-        hh = 0;
-        mm = 0;
-        d = 0;
-        m = 0;
-        yOff = 0;
-        RTC.adjust(DateTime(yOff, m, d, hh, mm, 0));
-    }
 }
 
 void thermo_loop(){
@@ -468,7 +458,7 @@ int analyse_cmd(char *str, char *key){
  */
 uint16_t print_200ok(uint8_t *buf){
   uint16_t plen;
-  plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n"));
+  plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"));
   return(plen);
 }
 
@@ -479,8 +469,9 @@ uint16_t print_200ok(uint8_t *buf){
 uint16_t print_homepage(uint8_t *buf){
   uint16_t plen;
   plen=print_200ok(buf);
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<html><head><script src=\"http://localhost/~ale/thermoduino/loader.js\"></script></head><body>"));
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<h1>Loading...</h1>"));
+  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<!DOCTYPE html><html><head></head><body>"));
+  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<h1>EtherShieldThermo</h1>"));
+  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<script src=\"http://localhost/~ale/thermoduino/loader.js\"></script>"));
   plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("</body></head></html>"));
   return(plen);
 }
@@ -499,60 +490,81 @@ void decimal_string(int num, char* _buf){
 /**
  * Print status
  */
-uint16_t print_status(uint8_t *buf){
+uint16_t print_json_response(uint8_t *buf){
     uint16_t plen;
     char buf2[32];
 
     // Update
     now = RTC.now();
 
-    plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: text/json\r\n\r\n"));
+    plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"));
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, pump_open ? PSTR("{P:1,u:") : PSTR("{P:0,u:"));
+    plen=es.ES_fill_tcp_data_p(buf,plen, pump_open ? PSTR("{\"P\":1,\"u\":") : PSTR("{\"P\":0,\"u\":"));
     ultoa(now.unixtime(), buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",E:"));
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"b\":"));
+    itoa(blocked, buf2, 10);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"E\":"));
     itoa(last_error_code, buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",f:"));
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"f\":"));
     itoa(memoryFree(), buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR(",R:{"));
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"T\":["));
+    decimal_string(T[0], buf2);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
+    decimal_string(T[1], buf2);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
+    decimal_string(T[2], buf2);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
+    decimal_string(T[3], buf2);
+    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR("]"));
+
+
+    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR(",\"R\":["));
     for(int room=0; room<ROOMS; room++){
 
-        itoa(room, buf2, 10);
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(":{t:"));
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR("{\"t\":"));
 
         decimal_string(rooms[room].temperature, buf2);
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",T:"));
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"T\":"));
         decimal_string(get_desired_temperature(room), buf2);
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         itoa(rooms[room].program, buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",p:"));
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"p\":"));
+        plen=es.ES_fill_tcp_data(buf,plen, buf2);
+
+        itoa(weekly_program[rooms[room].program][this_weekday], buf2, 10);
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"d\":"));
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         ultoa(rooms[room].last_status_change, buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",l:"));
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"l\":"));
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
 
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",s:"));
-        buf2[0] = '\'';
+        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"s\":"));
+        buf2[0] = '"';
         buf2[1] = rooms[room].status;
-        buf2[2] = '\'';
+        buf2[2] = '"';
         buf2[3] = '\0';
         plen=es.ES_fill_tcp_data(buf,plen, buf2);
 
         plen=es.ES_fill_tcp_data_p(buf,plen, room != ROOMS - 1 ? PSTR("},") : PSTR("}"));
     }
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("}}"));
+    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("]}"));
     return(plen);
 }
 
@@ -608,7 +620,7 @@ void loop(){
                     goto SENDTCP;
                 }
                 cmd=analyse_cmd((char *)&(buf[dat_p+5]), "c");
-                if(cmd){
+                if(cmd > 0){
                     // Switch?
                     switch(cmd){
                         case CMD_ROOM_SET_PGM:
@@ -629,16 +641,73 @@ void loop(){
                         break;
                         case CMD_TEMPERATURE_SET:
                             // Set T1, T2 and T3
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "t");
+                            if(parm1 < 1 || parm1 > 3){
+                                last_error_code = ERR_WRONG_PARM;
+                            } else {
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "v");
+                                switch(parm1){
+                                    case 1:
+                                        if(T[0] + 50 < parm2 && parm2 < T[2] - 50){
+                                            T[1] = parm2;
+                                        } else {
+                                            last_error_code = ERR_WRONG_PARM;
+                                        }
+                                    break;
+                                    case 2:
+                                        if(T[1] + 50 < parm2 && parm2  < T[3] - 50){
+                                            T[2] = parm2;
+                                        } else {
+                                            last_error_code = ERR_WRONG_PARM;
+                                        }
+                                    break;
+                                    case 3:
+                                        if(T[2] + 50 < parm2 && parm2 < MAX_ALLOWED_T ){
+                                            T[3] = parm2;
+                                        } else {
+                                            last_error_code = ERR_WRONG_PARM;
+                                        }
+                                    break;
+                                }
+                            }
                         break;
                         case CMD_TIME_SET:
-
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                            if(parm1 < 0 || parm1 > 5){ // 0 = hh, 1 = mm, 2 = ss, 3 = Y, 4 = m, 5 = d
+                                last_error_code = ERR_WRONG_PARM;
+                            } else {
+                                now = RTC.now();
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "s");
+                                switch(parm1){
+                                    case 0:
+                                        RTC.adjust(DateTime(now.year(), now.month(), now.day(), parm2, now.minute(), now.second()));
+                                    break;
+                                    case 1:
+                                        RTC.adjust(DateTime(now.year(), now.month(), now.day(), now.hour(), parm2, now.second()));
+                                    break;
+                                    case 2:
+                                        RTC.adjust(DateTime(now.year(), now.month(), now.day(), now.hour(), now.minute(), parm2));
+                                    break;
+                                    case 3:
+                                        RTC.adjust(DateTime(parm2, now.month(), now.day(), now.hour(), now.minute(), now.second()));
+                                    break;
+                                    case 4:
+                                        RTC.adjust(DateTime(now.year(), parm2, now.day(), now.hour(), now.minute(), now.second()));
+                                    break;
+                                    case 5:
+                                        RTC.adjust(DateTime(now.year(), now.month(), parm2, now.hour(), now.minute(), now.second()));
+                                    break;
+                                    default:
+                                        last_error_code = ERR_WRONG_PARM;
+                                }
+                            }
                         break;
                         default:
                             last_error_code = ERR_WRONG_COMMAND;
 
                     }
                 }
-                plen=print_status(buf);
+                plen=print_json_response(buf);
                 last_error_code = ERR_NO;
 SENDTCP:        es.ES_make_tcp_ack_from_any(buf); // send ack for http get
                 es.ES_make_tcp_ack_with_data(buf, plen); // send data
