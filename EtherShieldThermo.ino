@@ -350,9 +350,6 @@ void thermo_loop(){
 
 EtherShield es=EtherShield();
 
-//prepare the webpage by writing the data to the tcp send buffer
-uint16_t print_homepage(uint8_t *buf);
-int8_t analyse_cmd(char *str);
 
 //---Predisposizione--------------------------------------------------------
 void setup(){
@@ -445,19 +442,26 @@ uint8_t find_key_val(char *str,char *key){
 
 
 
+
+
 /**
- * Get the numeric single digit parameter
+ * Get the numeric positive int parameter
  */
-int8_t analyse_cmd(char *str, char *key){
-  int8_t r=-1;
+int analyse_cmd(char *str, char *key){
+  int r=-1;
+  char *buf_p;
   if(find_key_val(str, key)){
-    if(*strbuf < 0x3a && *strbuf > 0x2f){
+    buf_p = strbuf;
+    while(0x2f < *buf_p && *buf_p < 0x3a){
       //is a ASCII number, return it
-      r=(*strbuf - 0x30);
+      r = (r >= 0)  ? r * 10 + (*buf_p - 0x30) : (*buf_p - 0x30);
+      buf_p++;
     }
   }
   return r;
 }
+
+
 
 /**
  * Standard header
@@ -475,12 +479,15 @@ uint16_t print_200ok(uint8_t *buf){
 uint16_t print_homepage(uint8_t *buf){
   uint16_t plen;
   plen=print_200ok(buf);
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<html><head><script src=\"http://ajax.googleapis.com/ajax/libs/jquery/1.8.1/jquery.min.js\"></script><script src=\"//ajax.googleapis.com/ajax/libs/jqueryui/1.8.23/jquery-ui.min.js\"></script></head><body>"));
+  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<html><head><script src=\"http://localhost/~ale/thermoduino/loader.js\"></script></head><body>"));
   plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<h1>Loading...</h1>"));
   plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("</body></head></html>"));
   return(plen);
 }
 
+/**
+ * Int to float to string
+ */
 void decimal_string(int num, char* _buf){
     char buf2[3];
     itoa(num/100, _buf, 10);
@@ -496,17 +503,23 @@ uint16_t print_status(uint8_t *buf){
     uint16_t plen;
     char buf2[32];
 
+    // Update
+    now = RTC.now();
+
     plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: text/json\r\n\r\n"));
 
     plen=es.ES_fill_tcp_data_p(buf,plen, pump_open ? PSTR("{P:1,u:") : PSTR("{P:0,u:"));
     ultoa(now.unixtime(), buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
-    itoa(memoryFree(), buf2, 10);
+
     plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",E:"));
     itoa(last_error_code, buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
+
     plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",f:"));
+    itoa(memoryFree(), buf2, 10);
     plen=es.ES_fill_tcp_data(buf,plen, buf2);
+
     plen=es.ES_fill_tcp_data_p(buf,plen,PSTR(",R:{"));
     for(int room=0; room<ROOMS; room++){
 
@@ -542,7 +555,6 @@ uint16_t print_status(uint8_t *buf){
     plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("}}"));
     return(plen);
 }
-
 
 
 
@@ -596,24 +608,35 @@ void loop(){
                     goto SENDTCP;
                 }
                 cmd=analyse_cmd((char *)&(buf[dat_p+5]), "c");
-                // Switch?
-                switch(cmd){
-                    case CMD_ROOM_SET_PGM:
-                        parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "r");
-                        if(parm1 < 0 || parm1 >= ROOMS){
-                            last_error_code = ERR_WRONG_ROOM;
-                        } else {
-                            parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
-                            if(parm2 < 0 || parm2 >= PROGRAMS_NUMBER){
-                                last_error_code = ERR_WRONG_PROGRAM;
+                if(cmd){
+                    // Switch?
+                    switch(cmd){
+                        case CMD_ROOM_SET_PGM:
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "r");
+                            if(parm1 < 0 || parm1 >= ROOMS){
+                                last_error_code = ERR_WRONG_ROOM;
                             } else {
-                                rooms[parm1].program = parm2;
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                                if(parm2 < 0 || parm2 >= PROGRAMS_NUMBER){
+                                    last_error_code = ERR_WRONG_PROGRAM;
+                                } else {
+                                    rooms[parm1].program = parm2;
+                                }
                             }
-                        }
-                    break;
-                    default:
-                        last_error_code = ERR_WRONG_COMMAND;
+                        break;
+                        case CMD_WRITE_EEPROM:
+                            // Write to EEPROM
+                        break;
+                        case CMD_TEMPERATURE_SET:
+                            // Set T1, T2 and T3
+                        break;
+                        case CMD_TIME_SET:
 
+                        break;
+                        default:
+                            last_error_code = ERR_WRONG_COMMAND;
+
+                    }
                 }
                 plen=print_status(buf);
                 last_error_code = ERR_NO;
