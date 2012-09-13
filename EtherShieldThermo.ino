@@ -1,11 +1,10 @@
-/*etherShield_web_switch_02
-
-  22-07-12
-
-  Un pulsante comanda un LED su arduino pin 4
-
-
+/**
+*
+* Thermostat
+*
 */
+
+
 #include "EtherShield.h"
 
 
@@ -19,7 +18,7 @@
 
 
 #define HTTP_PORT 80
-#define BUFFER_SIZE 500
+#define BUFFER_SIZE 550
 
 
 //please modify the following two lines. mac and ip have to be unique
@@ -33,12 +32,9 @@ static uint8_t buf[BUFFER_SIZE+1];
 #define STR_BUFFER_SIZE 22
 static char strbuf[STR_BUFFER_SIZE+1];
 
+// Used here and there...
+static char buf32[32];
 
-/**
-*
-* Thermostat
-*
-*/
 
 // Needed for prog_char PROGMEM
 //#include <avr/pgmspace.h>
@@ -50,7 +46,10 @@ static char strbuf[STR_BUFFER_SIZE+1];
 
 // Number of rooms
 #define ROOMS 5
-#define PROGRAMS_NUMBER 7
+
+#define WEEKLY_PROGRAM_NUMBER 10
+#define DAILY_PROGRAM_NUMBER 8
+#define SLOT_NUMBER 8
 
 // Pins
 #define ONE_WIRE_PIN 9
@@ -92,6 +91,9 @@ static char strbuf[STR_BUFFER_SIZE+1];
 #define CMD_TIME_SET 3
 #define CMD_TEMPERATURE_SET 4
 #define CMD_RESET 5
+#define CMD_W_PGM_SET_D_PGM 6
+#define CMD_D_PGM_SET_T_PGM 7
+#define CMD_SLOT_SET_UPPER_BOUND 8
 
 //#include "Timer.h"
 Timer t;
@@ -149,24 +151,23 @@ DallasTemperature sensors(&oneWire);
 
 // Global time (minutes from 0)
 unsigned int this_time;
-uint32_t last_blocked_time = 0;
+uint32_t unlock_time = 0;
 byte this_weekday;
 int last_error_code = ERR_NO;
 
 // Global OFF
 byte off = 0;
 byte pump_open = 0;
-byte blocked = 0;
 
 // Temperatures
 // TODO: configurable
-int T[] = {500, 1500, 1800, 2800};
+uint16_t T[] = {500, 1500, 1800, 2800};
 
 // Programs
 // 8 slots    6:30  8:00 12:00 13:00 16:00 20:00 22:00
-unsigned int slot[] = { 390,  480,  720,  780,  960, 1200, 1320 };
+int slot[SLOT_NUMBER - 1] = { 390,  480,  720,  780,  960, 1200, 1320 };
 // 6 programs, T level for each slot/pgm tuple
-byte daily_program[][8] = {
+byte daily_program[DAILY_PROGRAM_NUMBER][SLOT_NUMBER] = {
     //0:00 6:30  8:00 12:00 13:00 16:00 20:00 22:00
     {    0,   0,    0,    0,    0,    0,    0,    0 }, // all T0
     {    1,   1,    1,    1,    1,    1,    1,    1 }, // all T1
@@ -179,7 +180,7 @@ byte daily_program[][8] = {
 };
 
 // Weekly programs, 0 is monday
-byte weekly_program[][PROGRAMS_NUMBER] = {
+byte weekly_program[WEEKLY_PROGRAM_NUMBER][7] = {
     //  Mo Tu Th We Fr Sa Su
         {0, 0, 0, 0, 0, 0, 0}, // always off
         {1, 1, 1, 1, 1, 1, 1}, // Always 1
@@ -237,11 +238,11 @@ void check_temperatures(){
     pump_open = 0;
 
     int needs_heating = false;
-    if(blocked && (now.unixtime() - last_blocked_time > BLOCKED_TIME_S )){
-        blocked = 0;
+    if(now.unixtime() > unlock_time){
+        unlock_time = 0;
     }
     for(int i=0; i<ROOMS; i++){
-        if(!blocked){
+        if(!unlock_time){
             // Get temperature
             float tempC = sensors.getTempC(rooms[i].address);
             if (tempC != -127.00) {
@@ -267,8 +268,7 @@ void check_temperatures(){
                         if(RISE_TEMP_TIME_S <  now.unixtime() - rooms[i].last_status_change){
                             if(rooms[i].temperature - rooms[i].old_temperature < RISE_TEMP_DELTA){
                                 new_status = BLOCKED;
-                                last_blocked_time = now.unixtime();
-                                blocked = 1;
+                                unlock_time = now.unixtime() + BLOCKED_TIME_S;
                             } else {
                                 rooms[i].last_status_change = now.unixtime();
                                 rooms[i].old_temperature = rooms[i].temperature;
@@ -293,7 +293,7 @@ void check_temperatures(){
             digitalWrite(rooms[i].pin, (new_status == OPENING) || (new_status == OPEN));
         }
     }
-    digitalWrite(PUMP_PIN, pump_open && !blocked);
+    digitalWrite(PUMP_PIN, pump_open && !unlock_time);
 }
 
 
@@ -469,10 +469,10 @@ uint16_t print_200ok(uint8_t *buf){
 uint16_t print_homepage(uint8_t *buf){
   uint16_t plen;
   plen=print_200ok(buf);
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<!DOCTYPE html><html><head></head><body>"));
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<h1>EtherShieldThermo</h1>"));
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<script src=\"http://localhost/~ale/thermoduino/loader.js\"></script>"));
-  plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("</body></head></html>"));
+  plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("<!DOCTYPE html><html><head></head><body>"));
+  plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("<h1>EtherShieldThermo</h1>"));
+  plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("<script src=\"http://localhost/~ale/thermoduino/loader.js\"></script>"));
+  plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("</body></head></html>"));
   return(plen);
 }
 
@@ -480,95 +480,150 @@ uint16_t print_homepage(uint8_t *buf){
  * Int to float to string
  */
 void decimal_string(int num, char* _buf){
-    char buf2[3];
+    char buf3[3];
     itoa(num/100, _buf, 10);
     strcat(_buf, ".");
-    itoa(num%100, buf2, 10);
-    strcat(_buf, buf2);
+    itoa(num%100, buf3, 10);
+    strcat(_buf, buf3);
 }
+
+/**
+ * Json helpers
+ */
+uint16_t bracket_open(uint16_t plen){
+    return es.ES_fill_tcp_data_p(buf, plen, PSTR("["));
+}
+uint16_t bracket_close(uint16_t plen){
+    return es.ES_fill_tcp_data_p(buf, plen, PSTR("]"));
+}
+
+uint16_t json_array_wrap(uint16_t p[], int length, uint8_t* _buf, uint16_t plen){
+    plen=bracket_open(plen);
+    for(int i = 0; i < length; i++){
+        decimal_string(p[i],  buf32);
+        plen=es.ES_fill_tcp_data(buf, plen, buf32);
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(","));
+    }
+    plen=bracket_close(plen-1);
+    return plen;
+}
+
+uint16_t json_array_wrap(byte p[], int length, uint8_t* _buf, uint16_t plen){
+    plen=bracket_open(plen);
+    for(int i = 0; i < length; i++){
+        itoa((int)p[i], buf32, 10);
+        plen=es.ES_fill_tcp_data(buf, plen, buf32);
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(","));
+    }
+    plen=bracket_close(plen-1);
+    return plen;
+}
+
+uint16_t json_array_wrap(int p[], int length, uint8_t* _buf, uint16_t plen){
+    plen=bracket_open(plen);
+    for(int i = 0; i < length; i++){
+        itoa(p[i], buf32, 10);
+        plen=es.ES_fill_tcp_data(buf, plen, buf32);
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(","));
+    }
+    plen=bracket_close(plen-1);
+    return plen;
+}
+
 
 /**
  * Print status
  */
-uint16_t print_json_response(uint8_t *buf){
+uint16_t print_json_response(uint8_t *buf, byte print_programs){
     uint16_t plen;
-    char buf2[32];
 
     // Update
     now = RTC.now();
 
     plen=es.ES_fill_tcp_data_p(buf,0,PSTR("HTTP/1.0 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"));
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, pump_open ? PSTR("{\"P\":1,\"u\":") : PSTR("{\"P\":0,\"u\":"));
-    ultoa(now.unixtime(), buf2, 10);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf, plen, pump_open ? PSTR("{\"P\":1,\"u\":") : PSTR("{\"P\":0,\"u\":"));
+    ultoa(now.unixtime(), buf32, 10);
+    plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"b\":"));
-    itoa(blocked, buf2, 10);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"b\":"));
+    ultoa(unlock_time , buf32, 10);
+    plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"E\":"));
-    itoa(last_error_code, buf2, 10);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"E\":"));
+    itoa(last_error_code, buf32, 10);
+    plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"f\":"));
-    itoa(memoryFree(), buf2, 10);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
+    plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"f\":"));
+    itoa(memoryFree(), buf32, 10);
+    plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"T\":["));
-    decimal_string(T[0], buf2);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
-    decimal_string(T[1], buf2);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
-    decimal_string(T[2], buf2);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(","));
-    decimal_string(T[3], buf2);
-    plen=es.ES_fill_tcp_data(buf,plen, buf2);
-    plen=es.ES_fill_tcp_data_p(buf,plen, PSTR("]"));
+    if(print_programs){
+
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"T\":"));
+        plen=json_array_wrap(T, 4, buf, plen);
+
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"s\":"));
+        plen=json_array_wrap(slot, SLOT_NUMBER - 1, buf, plen);
+
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"w\":["));
+
+        for(int i=0; i<WEEKLY_PROGRAM_NUMBER; i++){
+            plen=json_array_wrap(weekly_program[i], 7, buf, plen);
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(","));
+        }
+        plen--;
+        plen=es.ES_fill_tcp_data_p(buf, plen, PSTR("],\"d\":["));
+        for(int i=0; i<DAILY_PROGRAM_NUMBER; i++){
+            plen=json_array_wrap(daily_program[i], SLOT_NUMBER, buf, plen);
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(","));
+        }
+        plen--;
+        plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("]}"));
+
+    } else {
+        plen=es.ES_fill_tcp_data_p(buf, plen,PSTR(",\"R\":["));
+        for(int room=0; room<ROOMS; room++){
+
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR("{\"t\":"));
+
+            decimal_string(rooms[room].temperature, buf32);
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
+
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"T\":"));
+            decimal_string(get_desired_temperature(room), buf32);
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
+
+            itoa(rooms[room].program, buf32, 10);
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"p\":"));
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
+
+            itoa(weekly_program[rooms[room].program][this_weekday], buf32, 10);
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"d\":"));
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
+
+            ultoa(rooms[room].last_status_change, buf32, 10);
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"l\":"));
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
 
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR(",\"R\":["));
-    for(int room=0; room<ROOMS; room++){
+            plen=es.ES_fill_tcp_data_p(buf, plen, PSTR(",\"s\":"));
+            buf32[0] = '"';
+            buf32[1] = rooms[room].status;
+            buf32[2] = '"';
+            buf32[3] = '\0';
+            plen=es.ES_fill_tcp_data(buf, plen, buf32);
 
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR("{\"t\":"));
-
-        decimal_string(rooms[room].temperature, buf2);
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"T\":"));
-        decimal_string(get_desired_temperature(room), buf2);
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        itoa(rooms[room].program, buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"p\":"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        itoa(weekly_program[rooms[room].program][this_weekday], buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"d\":"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        ultoa(rooms[room].last_status_change, buf2, 10);
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"l\":"));
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-
-        plen=es.ES_fill_tcp_data_p(buf,plen, PSTR(",\"s\":"));
-        buf2[0] = '"';
-        buf2[1] = rooms[room].status;
-        buf2[2] = '"';
-        buf2[3] = '\0';
-        plen=es.ES_fill_tcp_data(buf,plen, buf2);
-
-        plen=es.ES_fill_tcp_data_p(buf,plen, room != ROOMS - 1 ? PSTR("},") : PSTR("}"));
+            plen=es.ES_fill_tcp_data_p(buf, plen, room != ROOMS - 1 ? PSTR("},") : PSTR("}"));
+        }
+        plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("]}"));
     }
-    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("]}"));
     return(plen);
 }
 
-
+byte in_range(int num, int low, int high){
+    return low <= num && num <= high;
+}
 
 /**
  * Main loop
@@ -576,21 +631,21 @@ uint16_t print_json_response(uint8_t *buf){
  */
 void loop(){
     uint16_t plen, dat_p;
-    int cmd, parm1, parm2;
+    int cmd, parm1, parm2, parm3;
     plen = es.ES_enc28j60PacketReceive(BUFFER_SIZE, buf);
     /*plen will be unequal to zero if there is a valid packet (without crc error) */
     if(plen!=0){
         // arp is broadcast if unknown but a host may also verify the mac address by sending it to a unicast address.
-        if(es.ES_eth_type_is_arp_and_my_ip(buf,plen)){
+        if(es.ES_eth_type_is_arp_and_my_ip(buf, plen)){
             es.ES_make_arp_answer_from_request(buf);
             return;
         }
         // check if ip packets are for us:
-        if(es.ES_eth_type_is_ip_and_my_ip(buf,plen)==0){
+        if(es.ES_eth_type_is_ip_and_my_ip(buf, plen)==0){
             return;
         }
         if(buf[IP_PROTO_P]==IP_PROTO_ICMP_V && buf[ICMP_TYPE_P]==ICMP_TYPE_ECHOREQUEST_V){
-            es.ES_make_echo_reply_from_request(buf,plen);
+            es.ES_make_echo_reply_from_request(buf, plen);
             return;
         }
         // tcp port www start, compare only the lower byte
@@ -612,11 +667,19 @@ void loop(){
                     // head, post and other methods for possible status codes see:
                     // http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html
                     plen=print_200ok(buf);
-                    plen=es.ES_fill_tcp_data_p(buf,plen,PSTR("<h1>200 OK</h1>"));
+                    plen=es.ES_fill_tcp_data_p(buf, plen,PSTR("<h1>200 OK</h1>"));
                     goto SENDTCP;
                 }
                 if(strncmp("/ ",(char *)&(buf[dat_p+4]),2)==0){
                     plen=print_homepage(buf);
+                    goto SENDTCP;
+                }
+                if(strncmp("/st",(char *)&(buf[dat_p+4]),3)==0){
+                    plen=print_json_response(buf, 0);
+                    goto SENDTCP;
+                }
+                if(strncmp("/pr",(char *)&(buf[dat_p+4]),3)==0){
+                    plen=print_json_response(buf, 1);
                     goto SENDTCP;
                 }
                 cmd=analyse_cmd((char *)&(buf[dat_p+5]), "c");
@@ -624,45 +687,69 @@ void loop(){
                     // Switch?
                     switch(cmd){
                         case CMD_ROOM_SET_PGM:
-                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "r");
-                            if(parm1 < 0 || parm1 >= ROOMS){
-                                last_error_code = ERR_WRONG_ROOM;
-                            } else {
-                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
-                                if(parm2 < 0 || parm2 >= PROGRAMS_NUMBER){
-                                    last_error_code = ERR_WRONG_PROGRAM;
-                                } else {
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                            if(in_range(parm1, 0, ROOMS - 1)){
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "v");
+                                if(in_range(parm2, 0, WEEKLY_PROGRAM_NUMBER - 1 )){
                                     rooms[parm1].program = parm2;
+                                } else {
+                                    last_error_code = ERR_WRONG_PROGRAM;
                                 }
+                            } else {
+                                last_error_code = ERR_WRONG_ROOM;
                             }
                         break;
                         case CMD_WRITE_EEPROM:
                             // Write to EEPROM
                         break;
+                        case CMD_W_PGM_SET_D_PGM:
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                            if(in_range(parm1, 0, WEEKLY_PROGRAM_NUMBER - 1)){
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "v"); // dayOfWeek
+                                if(in_range(parm2, 0, 6)){
+                                    parm3 = analyse_cmd((char *)&(buf[dat_p+5]), "v");
+                                    if(in_range(parm3, 0, DAILY_PROGRAM_NUMBER - 1)){
+                                        weekly_program[parm1][parm2] = parm3;
+                                    } else {
+                                        last_error_code = ERR_WRONG_PARM;
+                                    }
+                                } else {
+                                    last_error_code = ERR_WRONG_PARM;
+                                }
+                            } else {
+                                last_error_code = ERR_WRONG_PARM;
+                            }
+                        break;
+                        case CMD_D_PGM_SET_T_PGM:
+                            // Write to EEPROM
+                        break;
+                        case CMD_SLOT_SET_UPPER_BOUND:
+                            // Write to EEPROM
+                        break;
                         case CMD_TEMPERATURE_SET:
                             // Set T1, T2 and T3
-                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "t");
-                            if(parm1 < 1 || parm1 > 3){
+                            parm1 = analyse_cmd((char *)&(buf[dat_p+5]), "p");
+                            if(in_range(parm2, 1, 3)){
                                 last_error_code = ERR_WRONG_PARM;
                             } else {
                                 parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "v");
                                 switch(parm1){
                                     case 1:
-                                        if(T[0] + 50 < parm2 && parm2 < T[2] - 50){
+                                        if(in_range(parm2, T[0] + 50, T[2] - 50)){
                                             T[1] = parm2;
                                         } else {
                                             last_error_code = ERR_WRONG_PARM;
                                         }
                                     break;
                                     case 2:
-                                        if(T[1] + 50 < parm2 && parm2  < T[3] - 50){
+                                        if(in_range(parm2, T[1] + 50,  T[3] - 50)){
                                             T[2] = parm2;
                                         } else {
                                             last_error_code = ERR_WRONG_PARM;
                                         }
                                     break;
                                     case 3:
-                                        if(T[2] + 50 < parm2 && parm2 < MAX_ALLOWED_T ){
+                                        if(in_range(parm2, T[2] + 50, MAX_ALLOWED_T )){
                                             T[3] = parm2;
                                         } else {
                                             last_error_code = ERR_WRONG_PARM;
@@ -677,7 +764,7 @@ void loop(){
                                 last_error_code = ERR_WRONG_PARM;
                             } else {
                                 now = RTC.now();
-                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "s");
+                                parm2 = analyse_cmd((char *)&(buf[dat_p+5]), "v");
                                 switch(parm1){
                                     case 0:
                                         RTC.adjust(DateTime(now.year(), now.month(), now.day(), parm2, now.minute(), now.second()));
@@ -707,7 +794,7 @@ void loop(){
 
                     }
                 }
-                plen=print_json_response(buf);
+                plen=print_json_response(buf, 0);
                 last_error_code = ERR_NO;
 SENDTCP:        es.ES_make_tcp_ack_from_any(buf); // send ack for http get
                 es.ES_make_tcp_ack_with_data(buf, plen); // send data
