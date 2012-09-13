@@ -93,6 +93,8 @@ function set_date(){
 
 function change_program(pgm){
     ws_call(CMD_ROOM_SET_PGM, [window.location.hash.match(/room-(\d)-/)[1], pgm]);
+    // Close dialog
+    $('.ui-dialog').dialog('close');
 }
 
 
@@ -110,7 +112,7 @@ var page_tpl = '\
         <p>Stato: <b class="s">${status}</b></p>\
         <p>Programma: <span class="p"><a class="ui-link" href="#program-${p}-page" data-rel="dialog">${program_name}</a></span> <a href="#program-dlg-page" data-role="button" data-inline="true" data-transition="fade" data-rel="dialog">Cambia</a></p>\
         <h3>desiderata: <span class="T">${T}</span>°C</h3>\
-        <p><a href="#rooms-page" data-direction="reverse" data-role="button" data-rel="back"  data-icon="back">Indietro</a></p>\
+        <p><a href="#rooms-page" data-direction="reverse" data-role="button" data-icon="back">Indietro</a></p>\
     </div>\
   </div>\
 </script>\
@@ -157,7 +159,7 @@ var page_tpl = '\
         <div id="blocked" style="display: none; color: red"><h2>Sistema bloccato!</h2>\
             <p>Sblocco alle: <b id="unlock-time"></b></p>\
         </div>\
-        <h3>Data: <span id="data"></span> <a onclick="javascript:set_date()" data-role="button" data-inline="true" data-transition="fade" href="#">Sincronizza</a></h3><h3>Ora: <span id="ora"></span> <a onclick="javascript:set_time()" data-role="button" data-inline="true" data-transition="fade" href="#">Sincronizza</a></h2>\
+        <h3>Data: <span id="data"></span> <a onclick="javascript:set_date()" data-role="button" data-inline="true" data-transition="fade" href="#">Sincronizza con il dispositivo</a></h3><h3>Ora: <span id="ora"></span> <a onclick="javascript:set_time()" data-role="button" data-inline="true" data-transition="fade" href="#">Sincronizza con il dispositivo</a></h2>\
         <ul id="main-menu" data-role="listview" data-inset="true" data-filter="false">\
             <li><a href="#rooms-page">Stanze</a></li>\
             <li><a href="#setup-page">Impostazioni</a></li>\
@@ -172,7 +174,7 @@ var page_tpl = '\
     <div data-role="content">\
         <ul id="rooms-list" data-role="listview" data-inset="true" data-filter="false">\
         </ul>\
-        <p><a href="#home-page" data-direction="reverse" data-role="button" data-rel="back"  data-icon="back">Home</a></p>\
+        <p><a href="#home-page" data-direction="reverse" data-role="button" data-icon="back">Home</a></p>\
     </div>\
 </div>\
 <div id="setup-page" data-role="page" data-theme="b">\
@@ -198,7 +200,7 @@ var page_tpl = '\
             <label for="slider-T3">Slider:</label>\
             <input type="range" name="slider" id="slider-T3" value="5" min="5" max="25"  />\
         </div>\
-        <p><a href="#home-page" data-direction="reverse" data-role="button" data-rel="back"  data-icon="back">Home</a></p>\
+        <p><a href="#home-page" data-direction="reverse" data-role="button"  data-icon="back">Home</a></p>\
     </div>\
 </div>\
 ';
